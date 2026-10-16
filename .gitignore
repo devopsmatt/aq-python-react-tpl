@@ -1,0 +1,67 @@
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Node and Next.js
+node_modules/
+.next/
+out/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+next-env.d.ts
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Sensitive files: each pattern is listed explicitly and must never be committed
+.env
+.env.*
+!.env.example
+*.tfvars
+*.tfvars.json
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+credentials*
+*credentials.json
+secrets*
+*.gpg
+*.kbx
+id_rsa*
+id_ecdsa*
+id_ed25519*
+.ssh/
+.gnupg/
+.aws/
+.safety-project.ini
