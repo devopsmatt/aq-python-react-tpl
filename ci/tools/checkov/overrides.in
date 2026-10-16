@@ -1,0 +1,3 @@
+# checkov pins asteval==1.0.6, which has CVE-2026-55244 (fixed in 1.0.9).
+# Installed over the main lock with --no-deps. Remove once checkov raises its pin.
+asteval==1.0.10

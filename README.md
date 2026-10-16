@@ -199,8 +199,12 @@ The full standards are in `docs/`. These are the ones every change meets:
 
 ## Status
 
-Standards are drafted in `docs/`. No application code, infrastructure or
-pipelines exist yet. Decisions still open before they are built:
+Standards are in `docs/`. The pull request gate is live: `.github/workflows/pr.yml`
+runs the security battery (TruffleHog and Gitleaks, Trivy, canary-gated
+Checkov, actionlint, zizmor, ShellCheck, ASCII), with every tool pinned in
+`ci/tools/` and run as a binary rather than a container, plus the PR title
+check, on arm64 runners. Dependabot proposes minor and patch updates. No application code or infrastructure exists yet. Decisions
+still open before they are built:
 
 - Confirmation of the AWS commercial `us-east-1` assumption with the AO.
 - Semgrep `--config auto` (sends metrics to Semgrep) or pinned rule packs with

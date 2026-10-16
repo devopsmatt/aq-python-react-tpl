@@ -515,7 +515,7 @@ FIPS enforcement reaching `hashlib`.
 # syntax=docker/dockerfile:1
 # checkov:skip=CKV_DOCKER_2: health is checked by ALB target health checks on ECS
 # Both bases are written out in full and pinned by digest, so scanners and
-# Renovate can read them (an ARG-indirected FROM is reported as untagged).
+# Dependabot can read them (an ARG-indirected FROM is reported as untagged).
 FROM ghcr.io/aquia-inc/base-docker-images/python-base:3.13@sha256:<digest> AS builder
 USER root
 WORKDIR /src
@@ -542,7 +542,7 @@ ENTRYPOINT ["python3", "-m", "ai101_api"]
 Rules:
 
 - Every base reference is pinned by digest. Builds use `docker build --pull`
-  (the base images are rebuilt daily for CVE fixes), and Renovate raises the
+  (the base images are rebuilt daily for CVE fixes), and Dependabot raises the
   digest bumps as PRs.
 - The runtime image contains no compiler, no package manager cache, no `uv`,
   no tests, and no dev dependencies.

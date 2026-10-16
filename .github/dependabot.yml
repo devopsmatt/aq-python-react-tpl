@@ -1,0 +1,66 @@
+# Dependabot proposes minor and patch updates only; major versions are
+# upgraded deliberately, by hand. Updates are grouped into one PR per
+# ecosystem so CI runs once per batch, and releases must be 7 days old first
+# (cooldown). Covered today: GitHub Actions and the pinned CI tools in
+# ci/tools/ (Go modules and pip locks). Application ecosystems are added by
+# the PRs that introduce them.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/New_York
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: gomod
+    directories:
+      - /ci/tools/actionlint
+      - /ci/tools/gitleaks
+      - /ci/tools/trivy
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/New_York
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      ci-tool-go-modules:
+        patterns: ["*"]
+    commit-message:
+      prefix: build
+
+  - package-ecosystem: pip
+    directories:
+      - /ci/tools/checkov
+      - /ci/tools/zizmor
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/New_York
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      ci-tool-python:
+        patterns: ["*"]
+    commit-message:
+      prefix: build

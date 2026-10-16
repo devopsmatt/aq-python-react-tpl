@@ -18,6 +18,7 @@ in RFC 2119.
 .github/workflows/     CI/CD workflows
 .githooks/             pre-commit and pre-push hooks
 scripts/               validate-security.sh and other repo scripts
+ci/tools/              pinned CI scanner versions (go.mod per Go tool, hashed pip locks)
 python/api/            FastAPI service (uv workspace, see PYTHON.md)
 web/                   Next.js application (see NEXTJS.md)
 infra/terraform/       modules and live stacks, including the ECS services (see TERRAFORM.md)
@@ -49,10 +50,10 @@ Repository ruleset for `main` (targeting the default branch):
 | Require review from CODEOWNERS | yes (`.github/CODEOWNERS`) |
 | Dismiss stale approvals on new commits | yes |
 | Require conversation resolution | yes |
-| Require status checks | the PR battery (section 5), added as each workflow lands |
+| Require status checks | `security` and `pr-title` from `pr.yml` (section 5), bound to the GitHub Actions app; more are added as their jobs land |
 | Require signed commits | yes |
 | Block force pushes and deletion | yes |
-| Merge queue | yes, once required status checks exist |
+| Require branches to be up to date | yes (strict) |
 | Allowed merge method | squash |
 | Bypass list | repository admins, for merging pull requests only |
 
@@ -68,11 +69,12 @@ Repository ruleset for `main` (targeting the default branch):
 - **Signed commits:** every contributor signs commits (SSH or GPG signing key
   registered on GitHub, `git config commit.gpgsign true`). Squash commits
   that GitHub creates on merge are signed by GitHub.
-- **Merge queue instead of "require branches to be up to date":** with the
-  up-to-date rule, every merge forces every other open PR to rebase and rerun
-  the whole battery, which multiplies CI minutes. The merge queue tests each
-  PR once against the actual future head of `main`. Workflows that gate
-  merges MUST therefore also trigger on `merge_group`.
+- **Up-to-date branches, one PR at a time:** GitHub's merge queue is only
+  available to organization-owned repositories, so this personal-account
+  repository uses the strict "require branches to be up to date" rule. Its
+  cost is a re-run whenever `main` moves under an open PR; keeping one PR open
+  at a time makes that rare. A fork owned by an organization SHOULD switch to
+  the merge queue. `pr.yml` already triggers on `merge_group` for that.
 - **Tag protection:** a ruleset restricts creating, updating and deleting
   `v*` tags to the release automation.
 
@@ -155,7 +157,7 @@ image) are pinned by digest and never deployed.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `pr.yml` | `pull_request`, `merge_group` | The full battery, filtered by changed paths |
+| `pr.yml` | `pull_request`, `merge_group` | `security` (secrets, Trivy, Checkov, actionlint, zizmor, ShellCheck, ASCII) and `pr-title`; language and image jobs are added with their code |
 | `build.yml` | push to `main`, `v*` tags | Build, scan, SBOM, sign, push images to ECR, then call `deploy.yml` for `dev` (main) or `stage` (tags) |
 | `release.yml` | push to `main` | release-please (maintains the release PR) |
 | `deploy.yml` | `workflow_call`, `workflow_dispatch` | Reusable deploy: verify signatures, run migrations, then `terraform apply` of the environment's `app` stack with the release digests (section 8) |
@@ -164,8 +166,21 @@ image) are pinned by digest and never deployed.
 | `nightly-scan.yml` | nightly schedule | Rescan deployed digests and SBOMs; full-history secret scans |
 | `shannon.yml` | `workflow_dispatch` | Pre-release Shannon run against `stage` |
 
-`pr.yml` jobs (each one a required status check, and skipped when its paths
-did not change):
+`pr.yml` jobs today, each a required status check:
+
+- **security:** runs TruffleHog (official action, full history up to the PR
+  head), then builds gitleaks, trivy and actionlint with `setup-go` from
+  `ci/tools/<tool>/go.mod`, and installs checkov and zizmor with
+  `setup-python` from the hash-pinned locks in `ci/tools/`. It then runs
+  Gitleaks over the full history and the working tree, Trivy filesystem, the
+  canary-gated Checkov run (`scripts/checkov-gate.sh`), actionlint, zizmor,
+  ShellCheck (the runner's package) and the ASCII check
+  (`scripts/check-ascii.sh`). No scanner runs from a container image except
+  TruffleHog's official action ([SECURITY.md](SECURITY.md) 5.3).
+- **pr-title:** Conventional Commits title check (skipped for `merge_group`,
+  where a skipped job satisfies the check).
+
+Jobs added by later PRs, together with the code they check:
 
 - **python** (`python/api`): lint group,
   per-module mypy, pytest with the coverage gate, diff coverage, bandit,
@@ -173,12 +188,8 @@ did not change):
 - **web:** eslint, prettier, tsc, vitest with coverage, Playwright with axe,
   semgrep, bearer, njsscan, retire, npm audit, generated-types drift.
 - **terraform:** see [TERRAFORM.md](TERRAFORM.md) section 7.
-- **workflows:** actionlint, zizmor.
-- **repo:** trufflehog, gitleaks, trivy fs, checkov (Dockerfiles, Actions),
-  shellcheck, non-ASCII.
-- **images:** build every changed image (no push) and run Trivy on it, plus
-  the unit suite inside the FIPS runtime image.
-- **conventional-title:** PR title check.
+- **images:** build every changed application image (no push) and run Trivy
+  on it, plus the unit suite inside the FIPS runtime image.
 
 Path filtering happens per job, never with workflow-level `paths:`. A first
 `changes` job works out which areas the PR touches, and later jobs run with
@@ -195,9 +206,14 @@ spend them only where a change can affect the result:
   Playwright, image builds, and the FIPS-image test run only when `web/`,
   `python/` or a Dockerfile changes. Terraform plans run only for stacks
   under changed paths.
-- **Merge queue instead of up-to-date branches** (section 2): each PR is
-  tested once against its future base, rather than once per merge of another
-  PR.
+- **One PR open at a time** with strict up-to-date branches (section 2), so
+  a PR is rarely re-run because `main` moved.
+- **arm64 runners** (`ubuntu-24.04-arm`): the same architecture as
+  development machines and Fargate, and the cheaper runner type for forks
+  that pay for minutes.
+- **Scanner tools are built once per run** in the single `security` job, and
+  `setup-go` caches modules and build output keyed on the `go.sum` files, so
+  a warm run skips the compile.
 - **Cancel superseded runs:** `concurrency` with `cancel-in-progress: true` on
   PR workflows.
 - **Smallest standard GitHub-hosted runner** by default. A larger runner needs
@@ -222,7 +238,18 @@ Every workflow MUST pass actionlint and `zizmor --min-severity medium`, and
 follows these rules:
 
 - **Pin actions by full commit SHA**, with the version in a trailing comment
-  (`uses: actions/checkout@<sha> # v5.x.y`). Renovate updates them.
+  (`uses: actions/checkout@<sha> # v7.0.1`). Three layers enforce it: the
+  workflow files, the repository Actions setting that rejects any action not
+  pinned to a full SHA, and zizmor's `unpinned-uses` policy
+  (`.github/zizmor.yml`, `"*": hash-pin`). Dependabot updates the SHA and the
+  version comment together.
+- **Allowed actions:** the repository allows GitHub-owned actions plus
+  `trufflesecurity/trufflehog`. Adding another publisher's action is a
+  reviewed settings change.
+- **Workflow token:** the default `GITHUB_TOKEN` permission is read-only, and
+  GitHub Actions cannot create or approve pull requests, so a workflow can
+  never satisfy the code-owner review. Workflows from first-time and outside
+  contributors need approval before they run.
 - **Least-privilege token:** top-level `permissions: {}`. Each job grants only
   what it needs (`contents: read`, `id-token: write` only on jobs that assume
   an AWS role, and so on).
@@ -232,6 +259,12 @@ follows these rules:
   quoted as shell variables.
 - No `pull_request_target` or `workflow_run` workflow checks out or runs PR
   code.
+- **Dependency updates:** Dependabot (`.github/dependabot.yml`) proposes
+  minor and patch updates only, grouped into one PR per ecosystem: GitHub
+  Actions, the CI tool Go modules in `ci/tools/`, and the checkov and zizmor
+  pip locks. Releases wait out a 7-day cooldown. Majors are upgraded by
+  hand. Application ecosystems (uv, npm, app images, Terraform providers) are
+  added to the file by the PRs that introduce them.
 - **AWS access through OIDC only** ([TERRAFORM.md](TERRAFORM.md) section 8).
   No AWS keys in GitHub secrets.
 - **Secrets are scoped to environments.** Workflows triggered by forks

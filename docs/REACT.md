@@ -252,7 +252,7 @@ Tool notes:
   install script are reviewed and rebuilt explicitly with
   `npm rebuild <pkg>`. Install scripts are the main way compromised npm
   packages have spread.
-- Renovate applies a minimum release age (a few days) before it proposes a new
+- Dependabot applies a cooldown (7 days) before it proposes a new
   version, so a malicious release is usually caught and unpublished before it
   reaches a PR.
 - No runtime loading of scripts, styles or fonts from third-party CDNs
