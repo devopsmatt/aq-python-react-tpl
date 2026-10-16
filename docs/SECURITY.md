@@ -141,10 +141,16 @@ full battery, canary, prod, the same day where possible.
 
 ### 4.4 Findings that cannot be fixed yet
 
-- The finding is recorded with a mandatory expiry. For Trivy that is an entry
-  in `.trivyignore.yaml` with `expired_at` (the Aquia base-image pattern: the
-  finding fails builds again once the date passes, so an ignore cannot become
-  permanent quietly).
+- **Fixable means fix now; no fix means record and keep going.** A finding
+  with an installable fix is fixed in the same change. A finding with no fix
+  does not block work: it is recorded with its evidence (what is affected,
+  and whether the vulnerable code is reachable here), and for the production
+  system it is tracked in the POA&M.
+- When a tool would fail the gate on a no-fix finding that `--ignore-unfixed`
+  does not already skip, the finding is ignored with a mandatory expiry. For
+  Trivy that is an entry in `.trivyignore.yaml` with `expired_at` (the Aquia
+  base-image pattern: the finding fails builds again once the date passes, so
+  an ignore cannot become permanent quietly).
 - Every ignore, skip or suppression, in any tool, links to a POA&M item or a
   risk acceptance approved by the ISSO. FedRAMP deviation requests (false
   positive, risk adjustment, operational requirement) go to the AO with
@@ -182,26 +188,28 @@ commands.
 
 ### 5.3 pre-push and CI (full battery)
 
-Repository-wide:
+Repository-wide. No scanner runs from a container image. Locally the
+scanners are the installed binaries. In CI the same tools run as binaries
+built or installed from the pins in `ci/tools/` (TruffleHog runs through its
+official action):
 
 | Tool | Command | Blocks on |
 |---|---|---|
-| TruffleHog (history) | `trufflehog git file://. --only-verified --no-update --fail` | verified secret anywhere in history |
-| TruffleHog (working tree) | `trufflehog filesystem . --only-verified --no-update --fail` | verified secret in the tree |
+| TruffleHog (history), CI | `trufflesecurity/trufflehog` action, SHA-pinned, image pinned by digest, `head` = PR head and no `base` (full history up to the head), `--only-verified` | verified secret anywhere in history |
+| TruffleHog (history), local | `trufflehog git file://. --only-verified --no-update --fail` | verified secret anywhere in history |
+| TruffleHog (working tree), local | `trufflehog filesystem . --only-verified --no-update --fail` | verified secret in the tree |
 | Gitleaks (history) | `gitleaks git --redact --no-banner .` | any match |
 | Gitleaks (working tree) | `gitleaks dir --redact --no-banner .` | any match |
-| Trivy filesystem | `trivy fs --scanners vuln,secret,misconfig --severity MEDIUM,HIGH,CRITICAL --ignore-unfixed --exit-code 1 .` | MEDIUM and above, fixable |
-| Trivy image | `trivy image --severity MEDIUM,HIGH,CRITICAL --ignore-unfixed --exit-code 1 <image@digest>` | MEDIUM and above, fixable |
-| Checkov | `scripts/checkov-gate.sh` per framework (terraform, dockerfile, github_actions) | canary not caught, or any failed check |
-| ShellCheck | `shellcheck scripts/*.sh .githooks/*` | any finding |
+| Trivy filesystem | `trivy fs --scanners vuln,secret,misconfig --skip-version-check --severity MEDIUM,HIGH,CRITICAL --ignore-unfixed --exit-code 1 .` | MEDIUM and above, fixable |
+| Trivy image (application images) | `trivy image --image-src docker --severity MEDIUM,HIGH,CRITICAL --ignore-unfixed --exit-code 1 <image>` | MEDIUM and above, fixable |
+| Checkov | `scripts/checkov-gate.sh .` | canary not caught, or any failed check |
+| ShellCheck | `shellcheck <every tracked *.sh>` | any finding |
 | actionlint | `actionlint` | any finding |
-| zizmor | `zizmor --min-severity medium .github/workflows/` | MEDIUM and above |
-| Non-ASCII | see below | any match |
+| zizmor | `zizmor --min-severity medium --config .github/zizmor.yml .github/workflows` | MEDIUM and above, including any action not pinned to a full SHA |
+| ASCII only | `scripts/check-ascii.sh` | any byte outside printable ASCII |
 
-```bash
-# Non-ASCII gate: fails when any tracked text file contains a non-ASCII character
-! git ls-files -z | LC_ALL=C xargs -0 ggrep -nIP '[^\x00-\x7F]'
-```
+Image scans set `--image-src docker`, so Docker is the only image source:
+Trivy never falls back to containerd, Podman or a remote registry.
 
 Plus the Python battery ([PYTHON.md](PYTHON.md) section 7), the frontend
 battery ([REACT.md](REACT.md) section 7) and the Terraform checks
@@ -225,17 +233,57 @@ Notes (**Measured** entries were run on 2026-09-23 unless dated otherwise):
   ([REACT.md](REACT.md) section 7).
 - **Semgrep, measured:** `--config auto` requires metrics to be sent to
   Semgrep ([PYTHON.md](PYTHON.md) section 7).
-- **Non-ASCII, measured (2026-10-15):** on planted files containing an
-  em-dash, an arrow and a box-drawing character, `[^\x00-\x7F]` found both
-  files under `LC_ALL=C` and under `en_US.UTF-8`. The older
-  `[\x80-\xFF]` form found them under `LC_ALL=C` but found nothing under
-  UTF-8, because PCRE then reads `\x80-\xFF` as code points U+0080 to U+00FF.
-  Always use `[^\x00-\x7F]`. The command scans tracked text files only (`-I`
-  skips binaries). grep exits 0 on a match, so the `!` turns a match into a
-  failure. macOS needs GNU grep as `ggrep`, because BSD grep has no `-P` and
-  its error would read as "no match". Linux CI uses `grep`.
-- Every scanner version is pinned in CI and upgraded by Renovate PRs, so a
-  scanner upgrade that changes results shows up as its own reviewable change.
+- **Non-ASCII, measured (2026-10-15 and 2026-10-16):** a PCRE pattern of
+  `[\x80-\xFF]` finds nothing under a UTF-8 locale (PCRE reads it as code
+  points U+0080 to U+00FF), and the earlier
+  `! git ls-files -z | xargs -0 grep ...` form turned a grep error into a pass
+  (xargs exits 123, and `!` flips it to success). `scripts/check-ascii.sh`
+  replaces both. It runs `git grep -I` in the C locale with the bracket
+  expression `[^[:print:][:space:]]`, so no PCRE is needed, and it treats
+  exit 0 (found), 1 (clean) and anything else (error) separately. On planted
+  files it flagged an em-dash, an arrow, a box-drawing character and an
+  escape control character, skipped a binary, passed a file with tabs and
+  CRLF line endings, and returned 2 when git grep failed.
+- **CI tool pins, measured (2026-10-16, linux/arm64):** the upstream scanner
+  container images carried fixable MEDIUM+ vulnerabilities (actionlint
+  2 CRITICAL / 86 HIGH, gitleaks 2 CRITICAL / 57 HIGH including
+  CVE-2026-31789 in OpenSSL, checkov 26 HIGH from bundled kustomize and helm,
+  trivy 4 HIGH in the Go standard library, zizmor 21 MEDIUM OS packages,
+  trufflehog 1 MEDIUM), so scanner containers are not used. The upstream
+  release binaries of gitleaks (Go 1.24.13), trivy (Go 1.27.1) and actionlint
+  (Go 1.26.1) also carry Go standard-library findings, so CI builds those
+  three with `setup-go` from `ci/tools/<tool>/go.mod` using the current Go,
+  with `golang.org/x/*`, `rardecode`, `xz`, `klauspost/compress` and
+  `mholt/archives` raised past their fixed versions. checkov and zizmor
+  install from hash-pinned locks; checkov's lock leaves out `asteval`, and
+  `overrides.txt` supplies 1.0.10, because checkov pins the vulnerable 1.0.6.
+  Trivy and osv-scanner report no fixable findings in those pins.
+- **Installed local binaries** are the developer's responsibility to keep
+  current (for example `brew upgrade`). CI's pinned builds are the
+  authoritative gate.
+- **TruffleHog exception (code-owner decision, 2026-10-16):** a trufflehog
+  built from source still carried CVE-2026-33997 (MEDIUM) in
+  `github.com/docker/docker` v28.5.2. The flaw is in the Docker daemon's
+  plugin-install privilege check; trufflehog links only the client library,
+  for a docker-image source this CI never uses. Moby 29 moved to a new module
+  path, so no bump can fix it. TruffleHog therefore runs from its official
+  action in CI and from the installed binary locally, until trufflehog moves
+  to Moby 29.
+- **No-fix findings in the CI tool pins (2026-10-16).** These have no fixed
+  version, so they are tracked here and do not block (section 4.4):
+  - `ecdsa` 0.19.2 (CVE-2024-23342, PYSEC-2026-1325), required by checkov: a
+    timing side channel in signing, key generation and ECDH that upstream
+    will not fix. checkov in CI holds no private keys and signs nothing.
+  - GO-2026-5932, the deprecated `golang.org/x/crypto/openpgp` package: it
+    matches every `x/crypto` version, but `go list -deps` shows neither
+    gitleaks nor trivy imports `openpgp`.
+  - GO-2026-4919, the March 2026 Trivy supply-chain compromise: GitHub's
+    advisory limits it to v0.69.4 (OSV's range is open-ended); the pin is
+    v0.75.0, verified against sum.golang.org.
+- Every CI tool version is pinned (Go `go.sum`, pip locks with hashes, the
+  TruffleHog action SHA and image digest), and Dependabot raises minor and
+  patch updates as PRs, so a scanner upgrade that changes results shows up as
+  its own reviewable change.
 
 ### 5.4 Sensitive files
 
@@ -251,8 +299,11 @@ ignored.
 
 - **Pinning:** dependency lockfiles are committed (`uv.lock`,
   `package-lock.json`, `.terraform.lock.hcl`). GitHub Actions are pinned by
-  full commit SHA. Base images are pinned by digest. Renovate proposes every
-  update as a PR, with a minimum release age.
+  full commit SHA. Base images are pinned by tag and digest. Dependabot
+  (`.github/dependabot.yml`) proposes minor and patch updates as grouped PRs,
+  after a 7-day cooldown for third-party releases. Aquia base images are
+  first-party, rebuilt daily for CVE fixes, and checked daily without a
+  cooldown. Major versions are upgraded by hand.
 - **SBOM:** every image gets an SPDX or CycloneDX SBOM from `syft`, stored
   with the release and scanned nightly with `grype` against new advisories.
 - **Signing:** images are signed with cosign using the KMS `signing` key

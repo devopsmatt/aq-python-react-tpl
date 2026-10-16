@@ -257,7 +257,7 @@ Run from the repository root. The same commands run in the hooks and in CI.
 terraform fmt -check -recursive infra/terraform
 for d in infra/terraform/live/*/*/; do terraform -chdir="$d" init -backend=false -input=false && terraform -chdir="$d" validate; done
 tflint --recursive --chdir=infra/terraform
-scripts/checkov-gate.sh infra/terraform
+scripts/checkov-gate.sh .
 trivy config --severity MEDIUM,HIGH,CRITICAL --exit-code 1 infra/terraform
 ```
 
@@ -277,11 +277,11 @@ standard is therefore:
   `skip-check` entry in the repository Checkov config with a reason comment.
   Both are reviewed like code.
 - **The gate proves Checkov evaluated checks.** `scripts/checkov-gate.sh`
-  first scans a canary it writes to a temporary directory at run time (a
-  security group with SSH open to the world), using the same flags and config
-  as the real scan. The canary MUST fail with `CKV_AWS_24`. If it passes, or
-  fails for any other reason, the gate exits non-zero before the real scan
-  runs. The canary is never committed, so no other scanner sees it.
+  first scans a canary it writes to a temporary directory at run time, using
+  the same flags and config as the real scan. The canary MUST report every
+  expected failure (listed below). If it passes, or misses one, the gate exits
+  non-zero before the real scan runs. The canary is never committed, so no
+  other scanner sees it.
 
 **Canary gate, measured (2026-10-15):** with the standard flags the canary
 failed on `CKV_AWS_24` and the real probe tree then passed
@@ -290,45 +290,24 @@ same script, the canary passed and the gate exited 1 with
 "canary PASSED - checkov is not evaluating checks". A misconfigured scan now
 fails closed instead of reporting clean.
 
+The gate lives in `scripts/checkov-gate.sh`. One run covers Terraform,
+Dockerfiles and GitHub Actions together: the canary holds one known failure
+per framework (`CKV_AWS_24` for an open SSH ingress, `CKV_DOCKER_3` for a
+Dockerfile without `USER`, `CKV_GHA_2` for an untrusted expression in a
+`run:` step), and all three must be reported before the real scan runs. It uses whatever
+`checkov` is on `PATH`: the installed binary locally, and in CI the version
+pinned in `ci/tools/checkov/`:
+
 ```bash
-#!/usr/bin/env bash
-# scripts/checkov-gate.sh: prove Checkov evaluates checks (a planted canary
-# must fail), then scan the real tree with the same flags.
-set -euo pipefail
-target="${1:?usage: checkov-gate.sh <dir>}"
-flags=(--framework terraform --quiet --compact)
-canary="$(mktemp -d)"
-trap 'rm -rf "$canary"' EXIT
-cat > "$canary/main.tf" <<'TF'
-resource "aws_security_group" "checkov_canary" {
-  name = "checkov-canary"
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-TF
-if canary_out="$(checkov -d "$canary" "${flags[@]}" 2>&1)"; then
-  echo "checkov gate: canary PASSED - checkov is not evaluating checks" >&2
-  exit 1
-fi
-if ! grep -q 'CKV_AWS_24' <<<"$canary_out"; then
-  echo "checkov gate: canary failed for an unexpected reason" >&2
-  printf '%s\n' "$canary_out" >&2
-  exit 1
-fi
-echo "checkov gate: canary failed as expected (CKV_AWS_24)"
-checkov -d "$target" "${flags[@]}"
+scripts/checkov-gate.sh .
 ```
 
-The Dockerfile and GitHub Actions scans use the same script pattern, each
-with a canary for its own framework. **Measured (2026-10-15):** a Dockerfile
-with no `USER` instruction fails `CKV_DOCKER_3`, and a workflow step that
-interpolates `${{ github.event.issue.title }}` into `run:` fails `CKV_GHA_2`.
-A workflow with `permissions: write-all` failed nothing and is not a usable
-canary.
+**Measured (2026-10-15 and 2026-10-16):** a workflow with
+`permissions: write-all` failed nothing and is not a usable canary. With the
+three-framework canary, a run on this repository reported the canary
+failures as expected, then "Passed checks: 219, Failed checks: 0, Skipped
+checks: 6" (the six reasoned `CKV_DOCKER_2` skips) for Terraform and
+Dockerfiles, and 60 passed for GitHub Actions.
 
 Plan and apply:
 

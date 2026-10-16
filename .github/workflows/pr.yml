@@ -1,0 +1,150 @@
+# Pull request gate for main. Every action is pinned to a full commit SHA.
+# Scanners run as binaries, never as scanner containers:
+# - TruffleHog through its official action (image pinned by tag and digest);
+# - gitleaks, trivy and actionlint built by setup-go from the pinned modules in
+#   ci/tools/<tool>/go.mod (current Go, patched dependencies);
+# - checkov and zizmor installed by setup-python from the hash-pinned locks in
+#   ci/tools/<tool>/;
+# - ShellCheck from the runner image.
+# See docs/CICD.md and docs/SECURITY.md.
+name: pr
+
+on:
+  pull_request:
+    branches: [main]
+  # Kept so organization-owned forks of this template can use a merge queue.
+  merge_group:
+
+permissions: {}
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  security:
+    name: security
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out (full history, for secret scanning)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # With base empty and head set, the action scans the full history up to
+      # the PR head, not only the PR's own commits.
+      - name: TruffleHog - full git history (verified secrets)
+        uses: trufflesecurity/trufflehog@e76dff8a7e57d6df0c60ad8cbf5d5cba505a8fc9 # v3.99.2
+        with:
+          head: ${{ github.event.pull_request.head.sha || github.sha }}
+          version: 3.99.2@sha256:47a84bc18a0d04a165498bbbd3bacfd84176661cbc91f8e0f85467f6a771e99a
+          extra_args: --only-verified
+
+      - name: Set up Go (builds gitleaks, trivy, actionlint)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.2"
+          cache-dependency-path: ci/tools/*/go.sum
+
+      - name: Build Go scanners from pinned modules
+        env:
+          GOTOOLCHAIN: local
+          GOFLAGS: -mod=readonly
+          CGO_ENABLED: "0"
+        run: |
+          # gitleaks reads its version string from a linker variable; trivy and
+          # actionlint read theirs from the module build info.
+          gitleaks_version="$(go -C ci/tools/gitleaks list -m -f '{{.Version}}' github.com/zricethezav/gitleaks/v8)"
+          GOBIN="$RUNNER_TEMP/bin" go -C ci/tools/gitleaks install -trimpath \
+            -ldflags="-s -w -X github.com/zricethezav/gitleaks/v8/version.Version=${gitleaks_version}" tool
+          for tool in trivy actionlint; do
+            GOBIN="$RUNNER_TEMP/bin" go -C "ci/tools/$tool" install -trimpath -ldflags="-s -w" tool
+          done
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Python (installs checkov, zizmor)
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install Python scanners from hash-pinned locks
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+          PIP_NO_CACHE_DIR: "1"
+        run: |
+          python -m venv "$RUNNER_TEMP/py"
+          "$RUNNER_TEMP/py/bin/pip" install --no-deps --require-hashes \
+            -r ci/tools/checkov/requirements.txt \
+            -r ci/tools/checkov/overrides.txt \
+            -r ci/tools/zizmor/requirements.txt
+          echo "$RUNNER_TEMP/py/bin" >> "$GITHUB_PATH"
+
+      - name: Tool versions
+        run: |
+          gitleaks version
+          trivy --version | head -1
+          actionlint -version | head -1
+          checkov --version
+          zizmor --version
+          shellcheck --version | sed -n 2p
+
+      - name: Gitleaks - full git history
+        run: gitleaks git --redact --no-banner .
+
+      - name: Gitleaks - working tree
+        run: gitleaks dir --redact --no-banner .
+
+      - name: Trivy filesystem - vuln, secret, misconfig (MEDIUM+, fixable)
+        run: >-
+          trivy fs --scanners vuln,secret,misconfig --skip-version-check
+          --severity MEDIUM,HIGH,CRITICAL --ignore-unfixed --exit-code 1 .
+
+      - name: Checkov - canary-gated (Terraform, Dockerfile, GitHub Actions)
+        run: scripts/checkov-gate.sh .
+
+      - name: actionlint
+        run: actionlint
+
+      - name: zizmor (MEDIUM+, SHA pins required)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --min-severity medium --config .github/zizmor.yml .github/workflows
+
+      - name: ShellCheck
+        run: |
+          mapfile -d '' files < <(git ls-files -z -- '*.sh')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no shell scripts"
+            exit 0
+          fi
+          shellcheck "${files[@]}"
+
+      - name: ASCII only
+        run: scripts/check-ascii.sh
+
+  pr-title:
+    name: pr-title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Conventional Commit title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert)(\([a-z0-9._/-]+\))?!?: [^ ].{0,99}$'
+          if [[ "$PR_TITLE" =~ $pattern ]]; then
+            echo "PR title follows Conventional Commits"
+          else
+            echo "::error::PR title must follow Conventional Commits, for example 'ci: add the PR security workflow'"
+            exit 1
+          fi

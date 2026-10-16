@@ -1,0 +1,7 @@
+# zizmor configuration. Every action, including actions/* and github/*, must be
+# pinned to a full commit SHA (the repository setting enforces the same rule).
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "*": hash-pin
