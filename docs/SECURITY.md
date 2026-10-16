@@ -188,25 +188,22 @@ commands.
 
 ### 5.3 pre-push and CI (full battery)
 
-Repository-wide. No scanner runs from a container image. Locally the
-scanners are the installed binaries. In CI the same tools run as binaries
-built or installed from the pins in `ci/tools/` (TruffleHog runs through its
-official action):
+Repository-wide. Locally the scanners are the installed binaries. In CI every
+security tool runs from its official GitHub Action at the latest release,
+pinned to a full commit SHA (actionlint, which has no official action, is
+built by `setup-go` from `ci/tools/actionlint`):
 
-| Tool | Command | Blocks on |
-|---|---|---|
-| TruffleHog (history), CI | `trufflesecurity/trufflehog` action, SHA-pinned, image pinned by digest, `head` = PR head and no `base` (full history up to the head), `--only-verified` | verified secret anywhere in history |
-| TruffleHog (history), local | `trufflehog git file://. --only-verified --no-update --fail` | verified secret anywhere in history |
-| TruffleHog (working tree), local | `trufflehog filesystem . --only-verified --no-update --fail` | verified secret in the tree |
-| Gitleaks (history) | `gitleaks git --redact --no-banner .` | any match |
-| Gitleaks (working tree) | `gitleaks dir --redact --no-banner .` | any match |
-| Trivy filesystem | `trivy fs --scanners vuln,secret,misconfig --skip-version-check --severity MEDIUM,HIGH,CRITICAL --ignore-unfixed --exit-code 1 .` | MEDIUM and above, fixable |
-| Trivy image (application images) | `trivy image --image-src docker --severity MEDIUM,HIGH,CRITICAL --ignore-unfixed --exit-code 1 <image>` | MEDIUM and above, fixable |
-| Checkov | `scripts/checkov-gate.sh .` | canary not caught, or any failed check |
-| ShellCheck | `shellcheck <every tracked *.sh>` | any finding |
-| actionlint | `actionlint` | any finding |
-| zizmor | `zizmor --min-severity medium --config .github/zizmor.yml .github/workflows` | MEDIUM and above, including any action not pinned to a full SHA |
-| ASCII only | `scripts/check-ascii.sh` | any byte outside printable ASCII |
+| Tool | CI | Local | Blocks on |
+|---|---|---|---|
+| TruffleHog | `trufflesecurity/trufflehog` action; image pinned by digest; `head` = PR head and no `base` (full history up to the head); `--only-verified` | `trufflehog git file://. --only-verified --no-update --fail` and `trufflehog filesystem . --only-verified --no-update --fail` | verified secret |
+| Gitleaks | `gitleaks/gitleaks-action` (gitleaks 8.30.1), the PR's commits | `gitleaks git --redact --no-banner .` and `gitleaks dir --redact --no-banner .` | any match |
+| Trivy filesystem | `aquasecurity/trivy-action` (Trivy v0.76.0): `fs`, scanners `vuln,secret,misconfig`, `MEDIUM,HIGH,CRITICAL`, `ignore-unfixed`, exit code 1 | `trivy fs --scanners vuln,secret,misconfig --skip-version-check --severity MEDIUM,HIGH,CRITICAL --ignore-unfixed --exit-code 1 .` | MEDIUM and above, fixable |
+| Trivy image (application images) | added with the image jobs | `trivy image --image-src docker --severity MEDIUM,HIGH,CRITICAL --ignore-unfixed --exit-code 1 <image>` | MEDIUM and above, fixable |
+| Checkov | `bridgecrewio/checkov-action` with `.checkov.yml`: canary run, `scripts/checkov-gate.sh --assert-canary`, then the repository | `scripts/checkov-gate.sh .` | canary not caught, or any failed check |
+| zizmor | `zizmorcore/zizmor-action` (zizmor 1.31.1), MEDIUM+, `.github/zizmor.yml` | `zizmor --min-severity medium --config .github/zizmor.yml .` | MEDIUM and above, including any action not pinned to a full SHA |
+| actionlint | built by `setup-go` from `ci/tools/actionlint` | `actionlint` | any finding |
+| ShellCheck | runner package | `shellcheck <every tracked *.sh>` | any finding |
+| ASCII only | `scripts/check-ascii.sh` | `scripts/check-ascii.sh` | any byte outside printable ASCII |
 
 Image scans set `--image-src docker`, so Docker is the only image source:
 Trivy never falls back to containerd, Podman or a remote registry.
@@ -244,46 +241,30 @@ Notes (**Measured** entries were run on 2026-09-23 unless dated otherwise):
   files it flagged an em-dash, an arrow, a box-drawing character and an
   escape control character, skipped a binary, passed a file with tabs and
   CRLF line endings, and returned 2 when git grep failed.
-- **CI tool pins, measured (2026-10-16, linux/arm64):** the upstream scanner
-  container images carried fixable MEDIUM+ vulnerabilities (actionlint
-  2 CRITICAL / 86 HIGH, gitleaks 2 CRITICAL / 57 HIGH including
-  CVE-2026-31789 in OpenSSL, checkov 26 HIGH from bundled kustomize and helm,
-  trivy 4 HIGH in the Go standard library, zizmor 21 MEDIUM OS packages,
-  trufflehog 1 MEDIUM), so scanner containers are not used. The upstream
-  release binaries of gitleaks (Go 1.24.13), trivy (Go 1.27.1) and actionlint
-  (Go 1.26.1) also carry Go standard-library findings, so CI builds those
-  three with `setup-go` from `ci/tools/<tool>/go.mod` using the current Go,
-  with `golang.org/x/*`, `rardecode`, `xz`, `klauspost/compress` and
-  `mholt/archives` raised past their fixed versions. checkov and zizmor
-  install from hash-pinned locks; checkov's lock leaves out `asteval`, and
-  `overrides.txt` supplies 1.0.10, because checkov pins the vulnerable 1.0.6.
-  Trivy and osv-scanner report no fixable findings in those pins.
+- **Official actions and their images, measured (2026-10-16, linux/arm64).**
+  The code owner's rule is that CI security tooling comes from the vendors'
+  own GitHub Actions at their latest release, SHA-pinned. Two of them run
+  container images that carry fixable MEDIUM+ findings only the vendor can
+  fix: `checkov-action` runs `ghcr.io/bridgecrewio/checkov:3.3.29` (18 HIGH,
+  33 MEDIUM, mostly the Go standard library in the bundled kustomize and helm,
+  `urllib3` and `libcurl`), and the action references that image by tag, so
+  the action SHA does not pin the image digest. The TruffleHog image carries
+  CVE-2026-33997 in the docker client library (daemon-only code, not
+  reachable). They are accepted and re-checked when the actions are bumped.
+  The gitleaks-action binary (gitleaks 8.30.1) is built by upstream with Go
+  1.24.13. zizmor-action installs the zizmor wheel with pip; trivy-action
+  installs the Trivy release binary.
 - **Installed local binaries** are the developer's responsibility to keep
-  current (for example `brew upgrade`). CI's pinned builds are the
+  current (for example `brew upgrade`). CI's pinned actions are the
   authoritative gate.
-- **TruffleHog exception (code-owner decision, 2026-10-16):** a trufflehog
-  built from source still carried CVE-2026-33997 (MEDIUM) in
-  `github.com/docker/docker` v28.5.2. The flaw is in the Docker daemon's
-  plugin-install privilege check; trufflehog links only the client library,
-  for a docker-image source this CI never uses. Moby 29 moved to a new module
-  path, so no bump can fix it. TruffleHog therefore runs from its official
-  action in CI and from the installed binary locally, until trufflehog moves
-  to Moby 29.
-- **No-fix findings in the CI tool pins (2026-10-16).** These have no fixed
-  version, so they are tracked here and do not block (section 4.4):
-  - `ecdsa` 0.19.2 (CVE-2024-23342, PYSEC-2026-1325), required by checkov: a
-    timing side channel in signing, key generation and ECDH that upstream
-    will not fix. checkov in CI holds no private keys and signs nothing.
-  - GO-2026-5932, the deprecated `golang.org/x/crypto/openpgp` package: it
-    matches every `x/crypto` version, but `go list -deps` shows neither
-    gitleaks nor trivy imports `openpgp`.
-  - GO-2026-4919, the March 2026 Trivy supply-chain compromise: GitHub's
-    advisory limits it to v0.69.4 (OSV's range is open-ended); the pin is
-    v0.75.0, verified against sum.golang.org.
-- Every CI tool version is pinned (Go `go.sum`, pip locks with hashes, the
-  TruffleHog action SHA and image digest), and Dependabot raises minor and
-  patch updates as PRs, so a scanner upgrade that changes results shows up as
-  its own reviewable change.
+- **actionlint** is built from `ci/tools/actionlint/go.mod` with Go 1.27.2,
+  with `golang.org/x/sys` raised to v0.44.0 (GO-2026-5024). Trivy and
+  osv-scanner report nothing fixable in it.
+- Every CI tool version is pinned: action commit SHAs, tool versions set as
+  action inputs, the TruffleHog image digest, and actionlint's `go.sum`.
+  Dependabot raises minor and patch updates of the actions and the actionlint
+  module as PRs, so a scanner upgrade that changes results shows up as its own
+  reviewable change.
 
 ### 5.4 Sensitive files
 
