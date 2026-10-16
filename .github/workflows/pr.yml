@@ -1,11 +1,7 @@
-# Pull request gate for main. Every action is pinned to a full commit SHA.
-# Scanners run as binaries, never as scanner containers:
-# - TruffleHog through its official action (image pinned by tag and digest);
-# - gitleaks, trivy and actionlint built by setup-go from the pinned modules in
-#   ci/tools/<tool>/go.mod (current Go, patched dependencies);
-# - checkov and zizmor installed by setup-python from the hash-pinned locks in
-#   ci/tools/<tool>/;
-# - ShellCheck from the runner image.
+# Pull request gate for main. Security tools run from their official GitHub
+# Actions at the latest release, every one pinned to a full commit SHA, and
+# configured to fail on MEDIUM and above. actionlint has no official action,
+# so it is built by setup-go from ci/tools/actionlint/go.mod.
 # See docs/CICD.md and docs/SECURITY.md.
 name: pr
 
@@ -32,6 +28,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      pull-requests: read # gitleaks-action lists the PR's commits
     steps:
       - name: Check out (full history, for secret scanning)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,78 +45,55 @@ jobs:
           version: 3.99.2@sha256:47a84bc18a0d04a165498bbbd3bacfd84176661cbc91f8e0f85467f6a771e99a
           extra_args: --only-verified
 
-      - name: Set up Go (builds gitleaks, trivy, actionlint)
+      - name: Gitleaks - PR commits
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+      - name: Trivy filesystem - vuln, secret, misconfig (MEDIUM+, fixable)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_SKIP_VERSION_CHECK: "true"
+        with:
+          version: v0.76.0
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          hide-progress: true
+
+      - name: zizmor (MEDIUM+, SHA pins required)
+        uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        with:
+          version: 1.31.1
+          min-severity: medium
+          config: .github/zizmor.yml
+          advanced-security: false
+
+      - name: Set up Go (builds actionlint)
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.27.2"
-          cache-dependency-path: ci/tools/*/go.sum
+          cache-dependency-path: ci/tools/actionlint/go.sum
 
-      - name: Build Go scanners from pinned modules
+      - name: actionlint
         env:
           GOTOOLCHAIN: local
           GOFLAGS: -mod=readonly
           CGO_ENABLED: "0"
         run: |
-          # gitleaks reads its version string from a linker variable; trivy and
-          # actionlint read theirs from the module build info.
-          gitleaks_version="$(go -C ci/tools/gitleaks list -m -f '{{.Version}}' github.com/zricethezav/gitleaks/v8)"
-          GOBIN="$RUNNER_TEMP/bin" go -C ci/tools/gitleaks install -trimpath \
-            -ldflags="-s -w -X github.com/zricethezav/gitleaks/v8/version.Version=${gitleaks_version}" tool
-          for tool in trivy actionlint; do
-            GOBIN="$RUNNER_TEMP/bin" go -C "ci/tools/$tool" install -trimpath -ldflags="-s -w" tool
-          done
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-
-      - name: Set up Python (installs checkov, zizmor)
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.13"
-
-      - name: Install Python scanners from hash-pinned locks
-        env:
-          PIP_DISABLE_PIP_VERSION_CHECK: "1"
-          PIP_NO_CACHE_DIR: "1"
-        run: |
-          python -m venv "$RUNNER_TEMP/py"
-          "$RUNNER_TEMP/py/bin/pip" install --no-deps --require-hashes \
-            -r ci/tools/checkov/requirements.txt \
-            -r ci/tools/checkov/overrides.txt \
-            -r ci/tools/zizmor/requirements.txt
-          echo "$RUNNER_TEMP/py/bin" >> "$GITHUB_PATH"
-
-      - name: Tool versions
-        run: |
-          gitleaks version
-          trivy --version | head -1
-          actionlint -version | head -1
-          checkov --version
-          zizmor --version
-          shellcheck --version | sed -n 2p
-
-      - name: Gitleaks - full git history
-        run: gitleaks git --redact --no-banner .
-
-      - name: Gitleaks - working tree
-        run: gitleaks dir --redact --no-banner .
-
-      - name: Trivy filesystem - vuln, secret, misconfig (MEDIUM+, fixable)
-        run: >-
-          trivy fs --scanners vuln,secret,misconfig --skip-version-check
-          --severity MEDIUM,HIGH,CRITICAL --ignore-unfixed --exit-code 1 .
-
-      - name: Checkov - canary-gated (Terraform, Dockerfile, GitHub Actions)
-        run: scripts/checkov-gate.sh .
-
-      - name: actionlint
-        run: actionlint
-
-      - name: zizmor (MEDIUM+, SHA pins required)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: zizmor --min-severity medium --config .github/zizmor.yml .github/workflows
+          GOBIN="$RUNNER_TEMP/bin" go -C ci/tools/actionlint install -trimpath -ldflags="-s -w" tool
+          "$RUNNER_TEMP/bin/actionlint" -version | head -1
+          "$RUNNER_TEMP/bin/actionlint"
 
       - name: ShellCheck
         run: |
+          shellcheck --version | sed -n 2p
           mapfile -d '' files < <(git ls-files -z -- '*.sh')
           if [ "${#files[@]}" -eq 0 ]; then
             echo "no shell scripts"
@@ -129,6 +103,30 @@ jobs:
 
       - name: ASCII only
         run: scripts/check-ascii.sh
+
+      # Checkov runs last because its canary files must not reach the other
+      # scanners. The canary proves checks are running (docs/TERRAFORM.md 7).
+      - name: Checkov - write canary
+        run: scripts/checkov-gate.sh --write-canary .checkov-canary
+
+      - name: Checkov - scan canary (must report every canary check)
+        uses: bridgecrewio/checkov-action@6f26dc90000b74feb589a906cdfae540f5119895 # v12.3134.0
+        with:
+          directory: .checkov-canary
+          config_file: .checkov.yml
+          soft_fail: true
+          output_format: json
+          output_file_path: .checkov-canary-out
+
+      - name: Checkov - assert canary
+        run: scripts/checkov-gate.sh --assert-canary .checkov-canary-out/results_json.json
+
+      - name: Checkov - repository (Terraform, Dockerfile, GitHub Actions)
+        uses: bridgecrewio/checkov-action@6f26dc90000b74feb589a906cdfae540f5119895 # v12.3134.0
+        with:
+          directory: .
+          config_file: .checkov.yml
+          skip_path: .checkov-canary
 
   pr-title:
     name: pr-title

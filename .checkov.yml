@@ -1,0 +1,10 @@
+# Checkov configuration, shared by local runs (scripts/checkov-gate.sh) and CI
+# (bridgecrewio/checkov-action). There is deliberately no severity filter:
+# without a Prisma Cloud API key Checkov has no severities, and a filter such
+# as "check: MEDIUM" makes it run zero checks and exit 0 (docs/TERRAFORM.md 7).
+framework:
+  - terraform
+  - dockerfile
+  - github_actions
+compact: true
+quiet: true

@@ -18,7 +18,8 @@ in RFC 2119.
 .github/workflows/     CI/CD workflows
 .githooks/             pre-commit and pre-push hooks
 scripts/               validate-security.sh and other repo scripts
-ci/tools/              pinned CI scanner versions (go.mod per Go tool, hashed pip locks)
+ci/tools/actionlint/   pinned actionlint module (it has no official GitHub Action)
+.checkov.yml           Checkov configuration shared by local runs and CI
 python/api/            FastAPI service (uv workspace, see PYTHON.md)
 web/                   Next.js application (see NEXTJS.md)
 infra/terraform/       modules and live stacks, including the ECS services (see TERRAFORM.md)
@@ -168,15 +169,13 @@ image) are pinned by digest and never deployed.
 
 `pr.yml` jobs today, each a required status check:
 
-- **security:** runs TruffleHog (official action, full history up to the PR
-  head), then builds gitleaks, trivy and actionlint with `setup-go` from
-  `ci/tools/<tool>/go.mod`, and installs checkov and zizmor with
-  `setup-python` from the hash-pinned locks in `ci/tools/`. It then runs
-  Gitleaks over the full history and the working tree, Trivy filesystem, the
-  canary-gated Checkov run (`scripts/checkov-gate.sh`), actionlint, zizmor,
-  ShellCheck (the runner's package) and the ASCII check
-  (`scripts/check-ascii.sh`). No scanner runs from a container image except
-  TruffleHog's official action ([SECURITY.md](SECURITY.md) 5.3).
+- **security:** every security tool runs from its official GitHub Action at
+  the latest release, pinned to a full commit SHA: TruffleHog (full history up
+  to the PR head), Gitleaks (the PR's commits), Trivy filesystem, zizmor, and
+  Checkov (canary run, assertion, then the repository run, all with
+  `.checkov.yml`). actionlint has no official action, so `setup-go` builds it
+  from `ci/tools/actionlint/go.mod`. ShellCheck is the runner's package. The
+  ASCII check is `scripts/check-ascii.sh` ([SECURITY.md](SECURITY.md) 5.3).
 - **pr-title:** Conventional Commits title check (skipped for `merge_group`,
   where a skipped job satisfies the check).
 
@@ -211,9 +210,9 @@ spend them only where a change can affect the result:
 - **arm64 runners** (`ubuntu-24.04-arm`): the same architecture as
   development machines and Fargate, and the cheaper runner type for forks
   that pay for minutes.
-- **Scanner tools are built once per run** in the single `security` job, and
-  `setup-go` caches modules and build output keyed on the `go.sum` files, so
-  a warm run skips the compile.
+- **One `security` job** runs every scanner in sequence, so there is one
+  runner start and one checkout; `trivy-action` caches its database and
+  `setup-go` caches the actionlint build.
 - **Cancel superseded runs:** `concurrency` with `cancel-in-progress: true` on
   PR workflows.
 - **Smallest standard GitHub-hosted runner** by default. A larger runner needs
@@ -243,9 +242,15 @@ follows these rules:
   pinned to a full SHA, and zizmor's `unpinned-uses` policy
   (`.github/zizmor.yml`, `"*": hash-pin`). Dependabot updates the SHA and the
   version comment together.
-- **Allowed actions:** the repository allows GitHub-owned actions plus
-  `trufflesecurity/trufflehog`. Adding another publisher's action is a
+- **Allowed actions:** the repository allows GitHub-owned actions plus the
+  security actions in use: `trufflesecurity/trufflehog`,
+  `gitleaks/gitleaks-action`, `aquasecurity/trivy-action` (and the
+  `aquasecurity/setup-trivy` it calls), `zizmorcore/zizmor-action` and
+  `bridgecrewio/checkov-action`. Adding another publisher's action is a
   reviewed settings change.
+- **gitleaks-action licence:** it is free for repositories owned by personal
+  accounts. A fork owned by an organization needs a `GITLEAKS_LICENSE` secret
+  (a free key from gitleaks.io), or the step fails.
 - **Workflow token:** the default `GITHUB_TOKEN` permission is read-only, and
   GitHub Actions cannot create or approve pull requests, so a workflow can
   never satisfy the code-owner review. Workflows from first-time and outside
@@ -261,9 +266,10 @@ follows these rules:
   code.
 - **Dependency updates:** Dependabot (`.github/dependabot.yml`) proposes
   minor and patch updates only, grouped into one PR per ecosystem: GitHub
-  Actions, the CI tool Go modules in `ci/tools/`, and the checkov and zizmor
-  pip locks. Releases wait out a 7-day cooldown. Majors are upgraded by
-  hand. Application ecosystems (uv, npm, app images, Terraform providers) are
+  Actions (which carry the security tools) and the actionlint Go module.
+  Releases wait out a 7-day cooldown. Majors are upgraded by hand. Tool
+  versions set as action inputs (gitleaks, trivy, zizmor, the TruffleHog
+  image) are bumped by hand alongside their action. Application ecosystems (uv, npm, app images, Terraform providers) are
   added to the file by the PRs that introduce them.
 - **AWS access through OIDC only** ([TERRAFORM.md](TERRAFORM.md) section 8).
   No AWS keys in GitHub secrets.
