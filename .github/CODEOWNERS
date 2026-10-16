@@ -1,0 +1,3 @@
+# Code owners approve every change to main (docs/CICD.md section 2).
+# Only code owners can get a pull request merged.
+* @devopsmatt
