@@ -294,13 +294,19 @@ The gate lives in `scripts/checkov-gate.sh`. One run covers Terraform,
 Dockerfiles and GitHub Actions together: the canary holds one known failure
 per framework (`CKV_AWS_24` for an open SSH ingress, `CKV_DOCKER_3` for a
 Dockerfile without `USER`, `CKV_GHA_2` for an untrusted expression in a
-`run:` step), and all three must be reported before the real scan runs. It uses whatever
-`checkov` is on `PATH`: the installed binary locally, and in CI the version
-pinned in `ci/tools/checkov/`:
+`run:` step), and all three must be reported before the real scan runs. Both
+runs read `.checkov.yml`, so local and CI scans use the same frameworks and
+options. Locally the gate uses the installed `checkov`:
 
 ```bash
 scripts/checkov-gate.sh .
 ```
+
+In CI, `bridgecrewio/checkov-action` does the scanning. The workflow writes
+the canary (`scripts/checkov-gate.sh --write-canary`), runs the action on it
+with `soft_fail` and JSON output, fails the job unless
+`scripts/checkov-gate.sh --assert-canary` finds every canary check among the
+failed checks, and only then runs the action on the repository.
 
 **Measured (2026-10-15 and 2026-10-16):** a workflow with
 `permissions: write-all` failed nothing and is not a usable canary. With the

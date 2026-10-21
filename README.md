@@ -200,10 +200,10 @@ The full standards are in `docs/`. These are the ones every change meets:
 ## Status
 
 Standards are in `docs/`. The pull request gate is live: `.github/workflows/pr.yml`
-runs the security battery (TruffleHog and Gitleaks, Trivy, canary-gated
-Checkov, actionlint, zizmor, ShellCheck, ASCII), with every tool pinned in
-`ci/tools/` and run as a binary rather than a container, plus the PR title
-check, on arm64 runners. Dependabot proposes minor and patch updates. No application code or infrastructure exists yet. Decisions
+runs the security battery from the tools' official GitHub Actions, each
+pinned to a full commit SHA (TruffleHog, Gitleaks, Trivy, canary-gated
+Checkov, zizmor), plus actionlint, ShellCheck, an ASCII check and the PR
+title check, on arm64 runners. Dependabot proposes minor and patch updates. No application code or infrastructure exists yet. Decisions
 still open before they are built:
 
 - Confirmation of the AWS commercial `us-east-1` assumption with the AO.
