@@ -39,7 +39,7 @@ jobs:
       # With base empty and head set, the action scans the full history up to
       # the PR head, not only the PR's own commits.
       - name: TruffleHog - full git history (verified secrets)
-        uses: trufflesecurity/trufflehog@ea68ca03c865c5f324e86e849ced20ed3cf9dbbb # v3.99.8
+        uses: trufflesecurity/trufflehog@3bd2b5887eb0efb8fa18bfd1d296032924e4ffdc # v3.99.9
         with:
           head: ${{ github.event.pull_request.head.sha || github.sha }}
           version: 3.99.2@sha256:47a84bc18a0d04a165498bbbd3bacfd84176661cbc91f8e0f85467f6a771e99a
@@ -110,7 +110,7 @@ jobs:
         run: scripts/checkov-gate.sh --write-canary .checkov-canary
 
       - name: Checkov - scan canary (must report every canary check)
-        uses: bridgecrewio/checkov-action@45edc9d8856b664db2ec251f5f8632361f0a67aa # v12.3139.0
+        uses: bridgecrewio/checkov-action@3f0caf0c3aa9f56ade6b49f6e60b63aaeafb75a3 # v12.3141.0
         with:
           directory: .checkov-canary
           config_file: .checkov.yml
@@ -122,7 +122,7 @@ jobs:
         run: scripts/checkov-gate.sh --assert-canary .checkov-canary-out/results_json.json
 
       - name: Checkov - repository (Terraform, Dockerfile, GitHub Actions)
-        uses: bridgecrewio/checkov-action@45edc9d8856b664db2ec251f5f8632361f0a67aa # v12.3139.0
+        uses: bridgecrewio/checkov-action@3f0caf0c3aa9f56ade6b49f6e60b63aaeafb75a3 # v12.3141.0
         with:
           directory: .
           config_file: .checkov.yml
